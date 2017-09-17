@@ -2,6 +2,23 @@
 
 set -eu
 
+# Set data directory
+DATA_DIR="/etc/gitlab-runner"
+
+# Set config file
+CONFIG_FILE=${CONFIG_FILE:-$DATA_DIR/config.toml}
+
+# Set custom certificate authority paths
+CA_CERTIFICATES_PATH=${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
+LOCAL_CA_PATH="/usr/local/share/ca-certificates/ca.crt"
+
+# Create update_ca function
+update_ca() {
+  echo "==> Updating CA certificates..."
+  cp "${CA_CERTIFICATES_PATH}" "${LOCAL_CA_PATH}"
+  update-ca-certificates --fresh > /dev/null
+}
+
 # Ensure that either GITLAB_SERVICE_NAME or CI_SERVER_URL is set. Otherwise we can't register!
 if [ -z ${GITLAB_SERVICE_NAME+x} ]; then
     # Check that
@@ -26,37 +43,26 @@ fi
 # Check for RUNNER_CONCURRENT_BUILDS variable (custom defined variable)
 if [ -z ${RUNNER_CONCURRENT_BUILDS+x} ]; then
     echo "==> Concurrency is set to 1"
+    echo "concurrent = 1" > ${CONFIG_FILE}
 else
-    sed -i -e "s|concurrent = 1|concurrent = ${RUNNER_CONCURRENT_BUILDS}|g" /etc/gitlab-runner/config.toml
     echo "==> Concurrency is set to ${RUNNER_CONCURRENT_BUILDS}"
+    echo "concurrent = ${RUNNER_CONCURRENT_BUILDS}" > ${CONFIG_FILE}
 fi
 
-# Include the original entrypoint contents
-
-# Set data directory
-DATA_DIR="/etc/gitlab-runner"
-
-# Set config file
-CONFIG_FILE=${CONFIG_FILE:-$DATA_DIR/config.toml}
-
-# Set custom certificate authority paths
-CA_CERTIFICATES_PATH=${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
-LOCAL_CA_PATH="/usr/local/share/ca-certificates/ca.crt"
-
-# Create update_ca function
-update_ca() {
-  echo "==> Updating CA certificates..."
-  cp "${CA_CERTIFICATES_PATH}" "${LOCAL_CA_PATH}"
-  update-ca-certificates --fresh > /dev/null
-}
+# Check for RUNNER_CHECK_INTERVAL variable (custom defined variable)
+if [ -z ${RUNNER_CHECK_INTERVAL+x} ]; then
+    echo "==> Check interval is set to 0"
+    echo "check_interval = 0" >> ${CONFIG_FILE}
+else
+    echo "==> Check interval is set to ${RUNNER_CHECK_INTERVAL}"
+    echo "check_interval = ${RUNNER_CHECK_INTERVAL}" >> ${CONFIG_FILE}
+fi
 
 # Compare the custom CA path to the current CA path
 if [ -f "${CA_CERTIFICATES_PATH}" ]; then
   # Update the CA if the custom CA is different than the current
   cmp --silent "${CA_CERTIFICATES_PATH}" "${LOCAL_CA_PATH}" || update_ca
 fi
-
-# /Include the original entrypoint contents
 
 # Check whether CI_SERVER_URL is non-empty. If so, use the CI_SERVER_URL directly, if not, use
 if [ -z ${CI_SERVER_URL+x} ]; then
@@ -137,10 +143,10 @@ _getTerminationSignal() {
 }
 
 # Trap SIGTERM
-trap 'trap -- TERM INT EXIT;_getTerminationSignal' TERM INT EXIT
+trap 'trap - TERM INT EXIT;_getTerminationSignal' TERM INT EXIT
 
 # Register the runner
-exec gitlab-runner register -n ${RUNNER_NAME}
+gitlab-runner register -n ${RUNNER_NAME}
 
 # Start the runner
-exec gitlab-runner run --user=gitlab-runner=gitlab-runner --working-directory=${RUNNER_WORK_DIR} "$@"
+gitlab-runner run --user=gitlab-runner=gitlab-runner --working-directory=${RUNNER_WORK_DIR} "$@"
