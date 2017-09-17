@@ -2,11 +2,11 @@
 
 set -eu
 
-# Ensure that either GITLAB_SERVICE_NAME or GITLAB_INSTANCE_URL is set. Otherwise we can't register!
+# Ensure that either GITLAB_SERVICE_NAME or CI_SERVER_URL is set. Otherwise we can't register!
 if [ -z ${GITLAB_SERVICE_NAME+x} ]; then
     # Check that
-    if [ -z ${GITLAB_INSTANCE_URL+x} ]; then
-        echo "==> Need to either set GITLAB_SERVICE_NAME to the service name of GitLab (e.g. gitlab.marathon.mesos), or GITLAB_INSTANCE_URL to the URL of the GitLab instance! Exiting..."
+    if [ -z ${CI_SERVER_URL+x} ]; then
+        echo "==> Need to either set GITLAB_SERVICE_NAME to the service name of GitLab (e.g. gitlab.marathon.mesos), or CI_SERVER_URL to the URL of the GitLab instance! Exiting..."
         exit 1
     fi
 fi
@@ -58,8 +58,8 @@ fi
 
 # /Include the original entrypoint contents
 
-# Check whether GITLAB_INSTANCE_URL is non-empty. If so, use the GITLAB_INSTANCE_URL directly, if not, use
-if [ -z ${GITLAB_INSTANCE_URL+x} ]; then
+# Check whether CI_SERVER_URL is non-empty. If so, use the CI_SERVER_URL directly, if not, use
+if [ -z ${CI_SERVER_URL+x} ]; then
     # Display the GitLab instance URL discovery method
     echo "==> Using Mesos DNS to discover the GitLab instance URL"
 
@@ -71,26 +71,23 @@ if [ -z ${GITLAB_INSTANCE_URL+x} ]; then
     export CI_SERVER_URL=http://$(mesosdns-resolver --serviceName $GITLAB_SERVICE_NAME --server $MESOS_DNS_SERVER --portIndex 0)
 else
     # Display the GitLab instance URL discovery method
-    echo "==> Using the GITLAB_INSTANCE_URL environment variable to set the GitLab instance URL"
-
-    # Set CI_SERVER_URL to the GITLAB_INSTANCE_URL
-    export CI_SERVER_URL=${GITLAB_INSTANCE_URL}
+    echo "==> Using the CI_SERVER_URL environment variable to set the GitLab instance URL"
 fi
 
-# Derive the RUNNER_NAME from the MESOS_TASK_ID
-export RUNNER_NAME=${MESOS_TASK_ID}
+# Derive the RUNNER_NAME from the MESOS_TASK_ID if not set,and if MESOS_TASK_ID is not set then Rancher
+export RUNNER_NAME=${RUNNER_NAME:=${MESOS_TASK_ID:=$(curl -s rancher-metadata/latest/self/container/name 2> /dev/null || :)}}
 
 # Enable non-interactive registration the the main GitLab instance
 export REGISTER_NON_INTERACTIVE=true
 
 # Set the RUNNER_BUILDS_DIR
-export RUNNER_BUILDS_DIR=${MESOS_SANDBOX}/builds
+export RUNNER_BUILDS_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/builds
 
 # Set the RUNNER_CACHE_DIR
-export RUNNER_CACHE_DIR=${MESOS_SANDBOX}/cache
+export RUNNER_CACHE_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/cache
 
 # Set the RUNNER_WORK_DIR
-export RUNNER_WORK_DIR=${MESOS_SANDBOX}/work
+export RUNNER_WORK_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/work
 
 # Create directories
 mkdir -p $RUNNER_BUILDS_DIR $RUNNER_CACHE_DIR $RUNNER_WORK_DIR
@@ -112,7 +109,7 @@ else
 fi
 
 echo "==> Launching the Docker daemon..."
-dind docker daemon --host=unix:///var/run/docker.sock --storage-driver=overlay $DOCKER_EXTRA_OPTS &
+dind dockerd --host=unix:///var/run/docker.sock --storage-driver=overlay $DOCKER_EXTRA_OPTS &
 
 # Wait for the Docker daemon to start
 while(! docker info > /dev/null 2>&1); do
@@ -121,20 +118,25 @@ while(! docker info > /dev/null 2>&1); do
 done
 echo "==> Docker Daemon is up and running!"
 
+# If $HOST and $PORT0 are defined, export METRICS_SERVER env
+if [ ! -z ${HOST+x} ] && [ ! -z ${PORT0+x} ];then
+    export METRICS_SERVER="$HOST:$PORT0"
+fi
+
 # Termination function
 _getTerminationSignal() {
     echo "Caught SIGTERM signal! Deleting GitLab Runner!"
     # Unregister (by name). See https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/tree/master/docs/commands#by-name
-    gitlab-runner unregister --name ${MESOS_TASK_ID}
+    gitlab-runner unregister --name ${RUNNER_NAME}
     # Exit with error code 0
     exit 0
 }
 
 # Trap SIGTERM
-trap _getTerminationSignal TERM
+trap _getTerminationSignal TERM INT
 
 # Register the runner
-gitlab-runner register
+gitlab-runner register -n ${RUNNER_NAME}
 
 # Start the runner
-gitlab-runner run --working-directory=${RUNNER_WORK_DIR} --metrics-server $HOST:$PORT0
+gitlab-runner run --working-directory=${RUNNER_WORK_DIR}
