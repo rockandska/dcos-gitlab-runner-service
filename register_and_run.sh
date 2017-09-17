@@ -109,12 +109,16 @@ else
 fi
 
 echo "==> Launching the Docker daemon..."
-dind dockerd --host=unix:///var/run/docker.sock --storage-driver=overlay $DOCKER_EXTRA_OPTS &
+dind dockerd --host=unix:///var/run/docker.sock --storage-driver=${DOCKER_STORAGE_DRIVER:=aufs} $DOCKER_EXTRA_OPTS &
 
 # Wait for the Docker daemon to start
 while(! docker info > /dev/null 2>&1); do
     echo "==> Waiting for the Docker daemon to come online..."
     sleep 1
+    if [ ! -e /var/run/docker.pid ];then
+        echo "==> FATAL : dockerd failed to start"
+        exit 1
+    fi
 done
 echo "==> Docker Daemon is up and running!"
 
@@ -133,10 +137,10 @@ _getTerminationSignal() {
 }
 
 # Trap SIGTERM
-trap _getTerminationSignal TERM INT
+trap 'trap -- TERM INT EXIT;_getTerminationSignal' TERM INT EXIT
 
 # Register the runner
-gitlab-runner register -n ${RUNNER_NAME}
+exec gitlab-runner register -n ${RUNNER_NAME}
 
 # Start the runner
-gitlab-runner run --working-directory=${RUNNER_WORK_DIR}
+exec gitlab-runner run --user=gitlab-runner=gitlab-runner --working-directory=${RUNNER_WORK_DIR} "$@"
