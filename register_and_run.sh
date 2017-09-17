@@ -1,6 +1,8 @@
 #!/bin/sh
-
 set -eu
+
+# Trap SIGTERM
+trap 'trap - TERM INT EXIT;_getTerminationSignal' TERM INT EXIT
 
 # Set data directory
 DATA_DIR="/etc/gitlab-runner"
@@ -12,11 +14,41 @@ CONFIG_FILE=${CONFIG_FILE:-$DATA_DIR/config.toml}
 CA_CERTIFICATES_PATH=${CA_CERTIFICATES_PATH:-$DATA_DIR/certs/ca.crt}
 LOCAL_CA_PATH="/usr/local/share/ca-certificates/ca.crt"
 
+# Derive the RUNNER_NAME from the MESOS_TASK_ID if not set,and if MESOS_TASK_ID is not set then Rancher
+export RUNNER_NAME=${RUNNER_NAME:=${MESOS_TASK_ID:=$(curl -s rancher-metadata/latest/self/container/name 2> /dev/null || :)}}
+
+# Enable non-interactive registration the the main GitLab instance
+export REGISTER_NON_INTERACTIVE=true
+
+# Set RUNNER_DIR
+RUNNER_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}
+
+# Set the RUNNER_BUILDS_DIR
+RUNNER_BUILDS_DIR=${RUNNER_DIR}/builds
+
+# Set the RUNNER_CACHE_DIR
+RUNNER_CACHE_DIR=${RUNNER_DIR}/cache
+
+# Set the RUNNER_WORK_DIR
+RUNNER_WORK_DIR=${RUNNER_DIR}/work
+
+# Set the RUNNER_DATA_DIR ( used to .ssh and .docker persistence )
+RUNNER_DATA_DIR=${RUNNER_DIR}/data
+
 # Create update_ca function
 update_ca() {
   echo "==> Updating CA certificates..."
   cp "${CA_CERTIFICATES_PATH}" "${LOCAL_CA_PATH}"
   update-ca-certificates --fresh > /dev/null
+}
+
+# Termination function
+_getTerminationSignal() {
+    echo "Caught SIGTERM signal! Deleting GitLab Runner!"
+    # Unregister (by name). See https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/tree/master/docs/commands#by-name
+    gitlab-runner unregister --name ${RUNNER_NAME}
+    # Exit with error code 0
+    exit 0
 }
 
 # Ensure that either GITLAB_SERVICE_NAME or CI_SERVER_URL is set. Otherwise we can't register!
@@ -75,28 +107,33 @@ if [ -z ${CI_SERVER_URL+x} ]; then
     # Set the CI_SERVER_URL by resolving the Mesos DNS service name endpoint.
     # Environment variable GITLAB_SERVICE_NAME must be defined in the Marathon app.json
     export CI_SERVER_URL=http://$(mesosdns-resolver --serviceName $GITLAB_SERVICE_NAME --server $MESOS_DNS_SERVER --portIndex 0)
+    
+    if [ -z ${CI_SERVER_URL+x} ];then
+        echo "Failed to retrieve CI_SERVER_URL by Mesos" 1>&2
+        exit 1
+    fi
 else
     # Display the GitLab instance URL discovery method
     echo "==> Using the CI_SERVER_URL environment variable to set the GitLab instance URL"
 fi
 
-# Derive the RUNNER_NAME from the MESOS_TASK_ID if not set,and if MESOS_TASK_ID is not set then Rancher
-export RUNNER_NAME=${RUNNER_NAME:=${MESOS_TASK_ID:=$(curl -s rancher-metadata/latest/self/container/name 2> /dev/null || :)}}
-
-# Enable non-interactive registration the the main GitLab instance
-export REGISTER_NON_INTERACTIVE=true
-
-# Set the RUNNER_BUILDS_DIR
-export RUNNER_BUILDS_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/builds
-
-# Set the RUNNER_CACHE_DIR
-export RUNNER_CACHE_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/cache
-
-# Set the RUNNER_WORK_DIR
-export RUNNER_WORK_DIR=${MESOS_SANDBOX:=/home/gitlab-runner}/work
-
 # Create directories
-mkdir -p $RUNNER_BUILDS_DIR $RUNNER_CACHE_DIR $RUNNER_WORK_DIR
+mkdir -p $RUNNER_BUILDS_DIR $RUNNER_CACHE_DIR $RUNNER_WORK_DIR $RUNNER_DATA_DIR ${RUNNER_DATA_DIR}/.ssh ${RUNNER_DATA_DIR}/.docker
+
+# Generate deploy key
+if [ ! -e ${RUNNER_DATA_DIR}/.ssh/id_rsa -o ! -e ${RUNNER_DATA_DIR}/.ssh/id_rsa.pub ]; then
+    rm -rf ${RUNNER_DATA_DIR}/.ssh/id_rsa ${RUNNER_DATA_DIR}/.ssh/id_rsa.pub
+    echo "Generating SSH deploy keys..."
+    ssh-keygen -q -t rsa -N "" -f ${RUNNER_DATA_DIR}/.ssh/id_rsa
+fi
+
+# Fix directories permissions
+chown -R gitlab-runner:gitlab-runner $RUNNER_BUILDS_DIR $RUNNER_CACHE_DIR $RUNNER_WORK_DIR $RUNNER_DATA_DIR
+chmod 700 ${RUNNER_DATA_DIR}/.ssh
+chmod 700 ${RUNNER_DATA_DIR}/.docker
+chmod 600 ${RUNNER_DATA_DIR}/.ssh/id_rsa
+chmod 600 ${RUNNER_DATA_DIR}/.ssh/id_rsa.pub
+ln -sf ${RUNNER_DATA_DIR}/.ssh ${RUNNER_DIR}/.ssh
 
 # Print the environment for debugging purposes
 echo "==> Printing the environment"
@@ -133,20 +170,14 @@ if [ ! -z ${HOST+x} ] && [ ! -z ${PORT0+x} ];then
     export METRICS_SERVER="$HOST:$PORT0"
 fi
 
-# Termination function
-_getTerminationSignal() {
-    echo "Caught SIGTERM signal! Deleting GitLab Runner!"
-    # Unregister (by name). See https://gitlab.com/gitlab-org/gitlab-ci-multi-runner/tree/master/docs/commands#by-name
-    gitlab-runner unregister --name ${RUNNER_NAME}
-    # Exit with error code 0
-    exit 0
-}
-
-# Trap SIGTERM
-trap 'trap - TERM INT EXIT;_getTerminationSignal' TERM INT EXIT
-
 # Register the runner
+echo "==> Try to register the runner"
 gitlab-runner register -n ${RUNNER_NAME}
 
+# Display deploy key
+echo "==> Deploy key used by this runner:"
+cat ${RUNNER_DATA_DIR}/.ssh/id_rsa.pub
+
 # Start the runner
+echo "==> Start runner:"
 gitlab-runner run --user=gitlab-runner=gitlab-runner --working-directory=${RUNNER_WORK_DIR} "$@"
