@@ -21,6 +21,7 @@ ENV GITLAB_RUNNER_VERSION=9.5.0 \
 # 8.   Install Docker-Compose
 # 9.   Cleanup
 # 10.  Add dockermap user (for DinD)
+# 11.  Add gitlab runner user
 RUN apt-get update -qqy && \
     apt-get upgrade -qqy && \
     apt-get install --no-install-recommends -qqy \
@@ -65,7 +66,10 @@ RUN apt-get update -qqy && \
     rm -rf /var/lib/apt/lists/* && \
     adduser --system --group dockremap && \
     echo 'dockremap:165536:65536' >> /etc/subuid && \
-    echo 'dockremap:165536:65536' >> /etc/subgid
+    echo 'dockremap:165536:65536' >> /etc/subgid && \
+    adduser --disabled-login --gecos 'GitLab CI Runner' gitlab-runner && \
+    addgroup docker && \
+    usermod -a -G docker gitlab-runner
 
 # Add wrapper script
 ADD register_and_run.sh /
