@@ -11,15 +11,16 @@ ENV GITLAB_RUNNER_VERSION=9.5.0 \
     DUMB_VERSION=1.2.0
 
 # Install components and do the preparations
-# 1. Install needed packages
-# 2. Install Dumb Init
-# 3. Install GitLab CI runner
-# 4. Install mesosdns-resolver
-# 5. Install Docker
-# 6. Install DinD hack
-# 7. Install Docker-Machine
-# 8. Install Docker-Compose
-# 9. Cleanup
+# 1.   Install needed packages
+# 2.   Install Dumb Init
+# 3.   Install GitLab CI runner
+# 4.   Install mesosdns-resolver
+# 5.   Install Docker
+# 6.   Install DinD hack
+# 7.   Install Docker-Machine
+# 8.   Install Docker-Compose
+# 9.   Cleanup
+# 10.  Add dockermap user (for DinD)
 RUN apt-get update -qqy && \
     apt-get upgrade -qqy && \
     apt-get install --no-install-recommends -qqy \
@@ -61,7 +62,10 @@ RUN apt-get update -qqy && \
     chmod 0755 /usr/local/bin/docker-compose && \
     apt-get autoremove -qyy && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    adduser --system --group dockremap && \
+    echo 'dockremap:165536:65536' >> /etc/subuid && \
+    echo 'dockremap:165536:65536' >> /etc/subgid
 
 # Add wrapper script
 ADD register_and_run.sh /
