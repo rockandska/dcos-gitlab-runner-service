@@ -152,7 +152,8 @@ else
 fi
 
 echo "==> Launching the Docker daemon..."
-dind dockerd --host=unix:///var/run/docker.sock --storage-driver=${DOCKER_STORAGE_DRIVER:=aufs} $DOCKER_EXTRA_OPTS &
+rm -rf /var/run/docker.pid
+dind dockerd --host=unix:///var/run/docker.sock --storage-driver=${DOCKER_STORAGE_DRIVER:=overlay2} $DOCKER_EXTRA_OPTS &
 
 # Wait for the Docker daemon to start
 while(! docker info > /dev/null 2>&1); do
